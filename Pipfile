@@ -4,11 +4,16 @@ url = "https://pypi.org/simple"
 verify_ssl = true
 
 [dev-packages]
-pylint = "*"
 
 [packages]
+sklearn = "*"
+nltk = "*"
+numpy = "*"
+pylint = "*"
 spacy = "*"
 pytest = "*"
+networkx = "*"
+matplotlib = "*"
 
 [requires]
 python_version = "3.8"
