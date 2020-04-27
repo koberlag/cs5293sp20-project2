@@ -6,11 +6,14 @@ from nltk.stem import WordNetLemmatizer
 import unicodedata
 
 def tokenize_text(text):
+    '''Uses nltk to work tokenize and strip text.'''
     tokens = nltk.word_tokenize(text) 
     tokens = [token.strip() for token in tokens]
     return tokens
 
 def expand_contractions(text, contraction_mapping):
+    '''Uses the CONTRACTION_MAP dictionary to replace contractions
+    with their expanded counter part words.'''
     
     contractions_pattern = re.compile('({})'.format('|'.join(contraction_mapping.keys())), 
                                       flags=re.IGNORECASE|re.DOTALL)
@@ -27,81 +30,45 @@ def expand_contractions(text, contraction_mapping):
     expanded_text = re.sub("'", "", expanded_text)
     return expanded_text
     
-    
-def get_nltk_pos_tags(text):
-    '''Uses NLTK to return the parts of speech (POS) from the given nltk tokens'''
-    pos_tags = nltk.pos_tag(tokenize_text(text))
-    return pos_tags
-
-from nltk.corpus import wordnet as wn
-
-# Annotate text tokens with POS tags
-def nltk_tag_to_wordnet_tag(nltk_tag):
-    '''Converts an nltk_tag pos to the corresponding wordnet character'''
-    if nltk_tag.startswith('J'):
-        return wn.ADJ
-    elif nltk_tag.startswith('V'):
-        return wn.VERB
-    elif nltk_tag.startswith('N'):
-        return wn.NOUN
-    elif nltk_tag.startswith('R'):
-        return wn.ADV
-    else:          
-        return None
 
 def lemmatize_text(text):
+    '''Word tokenizes the given text, then 
+    uses WordNetLemmatizer to create lemmatized text.'''
     tokens = tokenize_text(text)
     lemmatizer = WordNetLemmatizer()
     lemma_text = ' '.join([lemmatizer.lemmatize(token) for token in tokens])
     return lemma_text
     
-# def lemmatize_text(text):
-#     '''Uses NLTK to lemmatize a given list of pos words and tags'''
-#     pos_tagged_text = get_nltk_pos_tags(text)
-#     lemmas = []
-#     lemmatizer = WordNetLemmatizer()
-#     for word, tag in pos_tagged_text:
-#         wn_tag = nltk_tag_to_wordnet_tag(tag)
-#         if(wn_tag):
-#             lemma = lemmatizer.lemmatize(word, wn_tag)
-#             lemmas.append(lemma)
-#         else:
-#             lemmas.append(word.lower())
-#     lemmatized_text = ' '.join(lemmas)
-#     return lemmatized_text
-    
 def remove_accented_chars(text):
     '''Replaces characters that contain accents, 
-    with the same character having no accent'''
+    with the same character having no accent.'''
     text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('utf-8', 'ignore')
     return text
 
 def remove_special_characters(text, remove_digits=False):
+    '''Removes characters that are not white-space, 
+    or alpha-numeric. e.g. punctuation.'''
     pattern = r'[^a-zA-z0-9\s]' if not remove_digits else r'[^a-zA-z\s]'
     text = re.sub(pattern, '', text)
     return text
     
 def remove_stopwords(text):
+    '''Uses nltk stopwords list to filter
+    out stopwords from the given text.'''
     stopword_list = nltk.corpus.stopwords.words('english')
     tokens = tokenize_text(text)
     filtered_tokens = [token for token in tokens if token.lower() not in stopword_list]
     filtered_text = ' '.join(filtered_tokens)    
     return filtered_text
 
-def keep_text_characters(text):
-    filtered_tokens = []
-    tokens = tokenize_text(text)
-    for token in tokens:
-        if re.search('[a-zA-Z]', token):
-            filtered_tokens.append(token)
-    filtered_text = ' '.join(filtered_tokens)
-    return filtered_text
 
 def normalize_corpus(corpus, contraction_expansion=True,
 accented_char_removal=True, text_lower_case=True,
 text_lemmatization=True, special_char_removal=True,
 stopword_removal=True, remove_digits=True):
-
+    '''Removes accented characters, expands contractions, 
+    makes the text lower case, removes extra new lines and white space, 
+    lemmatizes, removes special characters and\or digits, removes stopwords.'''
     normalized_corpus = []
     # normalize each document in the corpus
     for doc in corpus:
@@ -132,32 +99,9 @@ stopword_removal=True, remove_digits=True):
             doc = remove_stopwords(doc)
         normalized_corpus.append(doc)
     return normalized_corpus
-# def normalize_corpus(corpus, lemmatize=True, 
-#                      only_text_chars=False,
-#                      tokenize=False):
-    
-#     normalized_corpus = []    
-#     for text in corpus:
-#         text = expand_contractions(text, CONTRACTION_MAP)
-#         if lemmatize:
-#             text = lemmatize_text(text)
-#         else:
-#             text = text.lower()
-#         text = remove_special_characters(text)
-#         text = remove_stopwords(text)
-#         if only_text_chars:
-#             text = keep_text_characters(text)
-        
-#         if tokenize:
-#             text = tokenize_text(text)
-#             normalized_corpus.append(text)
-#         else:
-#             normalized_corpus.append(text)
-            
-#     return normalized_corpus
-
 
 def parse_document(document):
+    '''removes new lines, and uses nltk to sentence tokenize the given text.'''
     document = re.sub('\n', ' ', document)
     document = document.strip()
     sentences = nltk.sent_tokenize(document)

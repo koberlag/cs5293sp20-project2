@@ -7,35 +7,34 @@ from sklearn.cluster import KMeans
 from sklearn import metrics
 import spacy
 import nltk
-# nltk.download('stopwords')
-from nltk.tokenize import word_tokenize
-from nltk.stem import WordNetLemmatizer
-from nltk.corpus import wordnet
-from nltk.chunk import conlltags2tree, tree2conlltags
-import unicodedata
 import re
 from contractions import CONTRACTION_MAP
-# from normalize import normalize_corpus, parse_document
 from normalization import normalize_corpus, parse_document
-from string import punctuation
 import networkx
 import pandas as pd
 import time
 import sys
+from yellowbrick.cluster import KElbowVisualizer, SilhouetteVisualizer
 
+# Download stopwords
+nltk.download('stopwords')
+
+# Timer for diagnostics
 time_start = time.time()
 seconds = 0
 minutes = 0
 
 # Max number of files to read for clustering and summarizing
-MAX_FILE_COUNT = 5
+MAX_FILE_COUNT = 50
 
-# # Create spacy nlp object
+# Number of files read
+FILE_COUNT = 0
+
+# Create spacy nlp object
 NLP = spacy.load("en_core_web_sm")
 
-#10, 20, 0.266
 # Number of clusters to use in the clustering function
-NUM_CLUSTERS = 2
+NUM_CLUSTERS = 4
 
 # Number of features per cluster
 TOP_N_FEATURES = 5
@@ -49,15 +48,16 @@ def get_json_file_paths():
     A random sample up to either the 'MAX_FILE_COUNT' or the max number of json files
     available in the given directory will be returned."""
 
+    global FILE_COUNT
      # Get system directory from given relative path
     cord_comm_use_subset_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), DIR_TO_READ)
     # Use directory and wildcard to return glob object of .json file paths
     json_glob = glob.glob(cord_comm_use_subset_dir + "*.json")
     # Set max file count to the global param, unless the glob contains fewer elements, in which case set to length of glob
-    file_count = MAX_FILE_COUNT if len(json_glob) >= MAX_FILE_COUNT else len(json_glob)
+    FILE_COUNT = MAX_FILE_COUNT if len(json_glob) >= MAX_FILE_COUNT else len(json_glob)
     # Get a random sample of .json file paths
     random.seed(42)
-    json_paths = random.sample(json_glob, file_count)
+    json_paths = random.sample(json_glob, FILE_COUNT)
 
     return json_paths
 
@@ -163,43 +163,6 @@ def textrank_text_summarizer(sentences, num_sentences=2, feature_type='frequency
         print(ex) 
         return []
 
-from yellowbrick.cluster import KElbowVisualizer, SilhouetteVisualizer
-def cluster_document(file_name, sentences):
-    normalized_corpus = ' '.join(normalize_corpus(sentences))
-    tfidf_vectorizer = TfidfVectorizer()
-
-    pos_tag = ['PROPN', 'ADJ', 'NOUN', 'VERB']
-    text_spacy = NLP(normalized_corpus)
-    normalized_corpus = []
-    for token in text_spacy:
-        if(token.pos_ in pos_tag):
-            word = token.lemma_ if token.lemma_ != '-PRON-' else token.text
-            normalized_corpus.append(word)
-    try:
-        tfidf_matrix = tfidf_vectorizer.fit_transform(normalized_corpus)
-        # km = KMeans(n_clusters=NUM_CLUSTERS).fit(tfidf_matrix)
-        km = KMeans(n_clusters=NUM_CLUSTERS, max_iter=10000, n_init=50, random_state=42).fit(tfidf_matrix)
-        feature_names = tfidf_vectorizer.get_feature_names()
-        topn_features = TOP_N_FEATURES
-        ordered_centroids = km.cluster_centers_.argsort()[:, ::-1]
-        print("Silhouette Coefficient: %0.3f" % metrics.silhouette_score(tfidf_matrix, km.labels_, sample_size=1000))
-        visualizer = KElbowVisualizer(KMeans(), k=(2,32), metric='silhouette', timings=False)
-        visualizer = SilhouetteVisualizer(KMeans(13))
-        visualizer.fit(tfidf_matrix)
-        visualizer.poof()
-        # Use the quick method and immediately show the figure
-        # kelbow_visualizer(KMeans(random_state=4), tfidf_matrix, k=(2,10))
-
-        print('File Name: ' + file_name)
-        # get key features for each cluster
-        for cluster_num in range(NUM_CLUSTERS):
-            key_features = [feature_names[index] for index in ordered_centroids[cluster_num, :topn_features]]
-            print('CLUSTER #'+str(cluster_num+1))
-            print('Key Features:', key_features)
-            print('-'*80)
-    except Exception as ex:
-        print(ex)
-   
 
 def remove_add_summary():
     '''Deletes the existing SUMMARY.md file and creates a new one with the default header'''
@@ -208,7 +171,7 @@ def remove_add_summary():
         os.remove('SUMMARY.md')
         with(open("SUMMARY.md", "a")) as f:
             f.writelines(["THIS IS A SUMMARY FILE OF THE CORD-19 FILE DATA.\n", 
-                            "THE FOLLOWING SUMMARY INFORMATION WAS DETERMINED USING THE TEXT RANK ALGORITHM:\n",
+                            "THE FOLLOWING SUMMARY INFORMATION WAS DETERMINED USING THE TEXT RANK ALGORITHM ON A RANDOM SAMPLE OF 5000 FILES:\n",
                             "\n"])
 
 def k_means(feature_matrix, num_clusters=5):
@@ -251,14 +214,18 @@ def print_cluster_data(cluster_data):
         print('Files in this cluster:')
         print(', '.join(cluster_details['file_names']))
         print('='*40)
-
+        
+file_num = 0
 def build_summary_list(file_data, cluster_data):
-    
+    '''Loops over each cluster and summarizes each file per cluster. 
+    Returns a list of summary sentences per cluster, for all clusters'''
+
+    global file_num
     summaries = []
     # For each cluster
     for cluster_num, cluster_details in cluster_data.items():
         # For each file in the current cluster
-        for file_name in cluster_details['file_names']:
+        for index, file_name in enumerate(cluster_details['file_names']):
             # Get the title from the current file
             title = file_data[file_data['file_name'] == file_name]['title'].values.tolist()[0]
 
@@ -268,8 +235,8 @@ def build_summary_list(file_data, cluster_data):
             # Tokenize file text by sentence
             file_sent_tokens = parse_document(' '.join(file_text))
 
-            
-            print_elapsed_time(f"Summarize Cluster {cluster_num}")
+            file_num += 1
+            print_elapsed_time(f"Summarize Cluster {cluster_num}, file {index + 1}, file_num {file_num}")
             # Get top summary sentences
             summary_sentences = ' ' .join(textrank_text_summarizer(file_sent_tokens))
 
@@ -281,6 +248,8 @@ def build_summary_list(file_data, cluster_data):
     return summaries
 
 def print_elapsed_time(msg):
+    '''Method for displaying elapsed time output, for debugging purposes'''
+
     global time_start, seconds, minutes
     try:
         print(f"\r{msg}: {minutes} Minutes {seconds} Seconds")
@@ -296,17 +265,21 @@ def print_elapsed_time(msg):
 
 def main():
 
-    print(f"Max File Count: {MAX_FILE_COUNT}")
-    print(f"Number Of Clusters: {NUM_CLUSTERS}")
     print_elapsed_time("Begin Program")
+    print(f"Number Of Clusters to use: {NUM_CLUSTERS}")
+    print(f"Max File Count: {MAX_FILE_COUNT}")
+
 
     # Remove summary file if exists and add an empty one with header
     remove_add_summary()
 
     print_elapsed_time("Get File Data")
 
+    #2. Choose documents & 3. Write a files reader
     # Get the text data split per file, in a list  
     document_data = get_file_text_data_list()
+
+    print(f"Files Read: {FILE_COUNT}")
 
     file_data = pd.DataFrame(document_data)
 
@@ -328,6 +301,8 @@ def main():
     feature_names = vectorizer.get_feature_names() 
 
     print_elapsed_time("K-Means Model")
+
+    # 4. Cluster documents
     # Get k-means model and the cluster object
     km_obj, clusters = k_means(feature_matrix=feature_matrix, num_clusters=NUM_CLUSTERS)
 
@@ -345,12 +320,21 @@ def main():
     # print_cluster_data(cluster_data) 
 
     print_elapsed_time("Build Summaries")
+    
+    # 5. Summarize document clusters
     summaries = build_summary_list(file_data, cluster_data)
 
+    # 6. Write Summarized clusters to a file
     write_to_summary_file(summaries) 
 
 
     print("Silhouette Coefficient: %0.3f" % metrics.silhouette_score(feature_matrix, clusters, sample_size=1000))
+
+    # print_elapsed_time("Create K-Elbow Visualizer:")
+    # visualizer = KElbowVisualizer(KMeans(), k=(2,16), timings=False)
+    # # visualizer = SilhouetteVisualizer(KMeans(2))
+    # visualizer.fit(feature_matrix)
+    # visualizer.show()
 
     print_elapsed_time("End Program")
 
