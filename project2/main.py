@@ -2,7 +2,7 @@ import glob
 import json
 import os
 import random
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.cluster import KMeans
 from sklearn import metrics
 import spacy
@@ -16,20 +16,26 @@ import unicodedata
 import re
 from contractions import CONTRACTION_MAP
 # from normalize import normalize_corpus, parse_document
-from normalization import normalize_corpus
+from normalization import normalize_corpus, parse_document
 from string import punctuation
 import networkx
 import pandas as pd
+import time
+import sys
+
+time_start = time.time()
+seconds = 0
+minutes = 0
 
 # Max number of files to read for clustering and summarizing
-MAX_FILE_COUNT = 10
+MAX_FILE_COUNT = 5
 
 # # Create spacy nlp object
 NLP = spacy.load("en_core_web_sm")
 
 #10, 20, 0.266
 # Number of clusters to use in the clustering function
-NUM_CLUSTERS = 6
+NUM_CLUSTERS = 2
 
 # Number of features per cluster
 TOP_N_FEATURES = 5
@@ -75,11 +81,11 @@ def get_file_text_data_list():
                 
                 if(data is not None):
                     # Create dict to hold file name and text
-                    paragraph_dict = {'file_name': file_name + file_ext, 'text': []}
+                    paragraph_dict = {'file_name': file_name + file_ext, 'file_text': [], 'title': data['metadata']['title']}
                     # for each paragraph in body_text
                     for body_text in data['body_text']:
                         # Add paragraph to text list in the dict
-                        paragraph_dict['text'].append(body_text['text'])
+                        paragraph_dict['file_text'].append(body_text['text'])
                         
                     # Append file data to document_list
                     document_list.append(paragraph_dict)
@@ -91,39 +97,21 @@ def get_file_text_data_list():
             print(ex)
     return document_list
 
-
-def write_to_summary_file(file_name, summary_sentences):
+def write_to_summary_file(summaries):
+    '''Writes the given information the SUMMARY.md file, appending to the existing data.'''
+   
     with(open("SUMMARY.md", "a")) as f:
-        f.write(f"File Name: {file_name} \n")
-        f.writelines(summary_sentences)
-        f.write("\n\n")
+        for file_summary in summaries:
 
-
-
-from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
-
-# def build_feature_matrix(documents, feature_type='frequency'):
-
-#     feature_type = feature_type.lower().strip()  
-    
-#     if feature_type == 'binary':
-#         vectorizer = CountVectorizer(binary=True, min_df=1, 
-#                                      ngram_range=(1, 1))
-#     elif feature_type == 'frequency':
-#         vectorizer = CountVectorizer(binary=False, min_df=1, 
-#                                      ngram_range=(1, 1))
-#     elif feature_type == 'tfidf':
-#         vectorizer = TfidfVectorizer(min_df=1, 
-#                                      ngram_range=(1, 1))
-#     else:
-#         raise Exception("Wrong feature type entered. Possible values: 'binary', 'frequency', 'tfidf'")
-
-#     feature_matrix = vectorizer.fit_transform(documents).astype(float)
-    
-#     return vectorizer, feature_matrix
+            f.write(f"Cluster: {file_summary['cluster_number']} \n")
+            f.write(f"File Name: {file_summary['file_name']} \n")
+            f.write(f"Title: {file_summary['title']} \n")
+            f.writelines(f"Summary: {file_summary['file_summary_sents']}")
+            f.write("\n\n")
 
 def build_feature_matrix(documents, feature_type='frequency',
                          ngram_range=(1, 1), min_df=0.0, max_df=1.0):
+    '''Builds a document-term feature matrix using wieghts like TF_IDF or Bag of Words'''
 
     feature_type = feature_type.lower().strip()  
     
@@ -143,21 +131,16 @@ def build_feature_matrix(documents, feature_type='frequency',
     
     return vectorizer, feature_matrix
 
-
-from scipy.sparse.linalg import svds
     
-def low_rank_svd(matrix, singular_count=2):
+def textrank_text_summarizer(sentences, num_sentences=2, feature_type='frequency'):
+    """Builds a document-term feature matrix, and computes a document similarity matrix
+    by multiplying the matrix by its transpose. These documents(sentences) are fed into
+    the PageRank algorithm to obtain a score for each sentence. The senteces are ranked
+    based on teh score and the top sentences are returned as the summarization"""
     
-    u, s, vt = svds(matrix, k=singular_count)
-    return u, s, vt
-
-    
-
-def textrank_text_summarizer(sentences, dt_matrix, num_sentences=2,
-                             feature_type='frequency'):
     try:
-        # vec, dt_matrix = build_feature_matrix(sentences, 
-        #                               feature_type='tfidf')
+        vec, dt_matrix = build_feature_matrix(sentences, feature_type='tfidf')
+
         similarity_matrix = (dt_matrix * dt_matrix.T)
             
         similarity_graph = networkx.from_scipy_sparse_matrix(similarity_matrix)
@@ -219,7 +202,9 @@ def cluster_document(file_name, sentences):
    
 
 def remove_add_summary():
-     if(os.path.isfile("SUMMARY.md")):
+    '''Deletes the existing SUMMARY.md file and creates a new one with the default header'''
+    
+    if(os.path.isfile("SUMMARY.md")):
         os.remove('SUMMARY.md')
         with(open("SUMMARY.md", "a")) as f:
             f.writelines(["THIS IS A SUMMARY FILE OF THE CORD-19 FILE DATA.\n", 
@@ -227,6 +212,9 @@ def remove_add_summary():
                             "\n"])
 
 def k_means(feature_matrix, num_clusters=5):
+    '''Creates a k-means cluster model and fits the model
+     with the given document-term feature matrix.
+     Returns the model and the clusters (model labels)'''
     km = KMeans(n_clusters=num_clusters,
                 max_iter=10000)
     km.fit(feature_matrix)
@@ -236,7 +224,8 @@ def k_means(feature_matrix, num_clusters=5):
 def get_cluster_data(clustering_obj, file_data, 
                      feature_names, num_clusters,
                      topn_features=10):
-
+    '''Creates and returns an object with the cluster number, key features
+    and file data per cluster.'''
     cluster_details = {}  
     # get cluster centroids
     ordered_centroids = clustering_obj.cluster_centers_.argsort()[:, ::-1]
@@ -245,195 +234,125 @@ def get_cluster_data(clustering_obj, file_data,
     for cluster_num in range(num_clusters):
         cluster_details[cluster_num] = {}
         cluster_details[cluster_num]['cluster_num'] = cluster_num
-        key_features = [feature_names[index] 
-                        for index in ordered_centroids[cluster_num, :topn_features]]
+        key_features = [feature_names[index] for index in ordered_centroids[cluster_num, :topn_features]]
         cluster_details[cluster_num]['key_features'] = key_features
-        
-        files = file_data[file_data['Cluster'] == cluster_num]['file_name'].values.tolist()
-        cluster_details[cluster_num]['files'] = files
-    
+        file_names = file_data[file_data['cluster'] == cluster_num]['file_name'].values.tolist()
+        cluster_details[cluster_num]['file_names'] = file_names
     return cluster_details
 
 def print_cluster_data(cluster_data):
+    '''Prints the cluster number, key features, and the file names of the files
+    used in each cluster'''
     # print cluster details
     for cluster_num, cluster_details in cluster_data.items():
         print('Cluster {} details:'.format(cluster_num))
         print('-'*20)
         print('Key features:', cluster_details['key_features'])
         print('Files in this cluster:')
-        print(', '.join(cluster_details['files']))
+        print(', '.join(cluster_details['file_names']))
         print('='*40)
 
-def main():
+def build_summary_list(file_data, cluster_data):
     
+    summaries = []
+    # For each cluster
+    for cluster_num, cluster_details in cluster_data.items():
+        # For each file in the current cluster
+        for file_name in cluster_details['file_names']:
+            # Get the title from the current file
+            title = file_data[file_data['file_name'] == file_name]['title'].values.tolist()[0]
+
+            # Get the original file text from the current file
+            file_text = file_data[file_data['file_name'] == file_name]['file_text'].values.tolist()[0]
+
+            # Tokenize file text by sentence
+            file_sent_tokens = parse_document(' '.join(file_text))
+
+            
+            print_elapsed_time(f"Summarize Cluster {cluster_num}")
+            # Get top summary sentences
+            summary_sentences = ' ' .join(textrank_text_summarizer(file_sent_tokens))
+
+            # Create dict to hold file name, title and text
+            summary_dict = {'cluster_number': cluster_num, 'file_name': file_name, 'title': title, 'file_summary_sents': summary_sentences}
+            
+            # Add to summaries list
+            summaries.append(summary_dict)
+    return summaries
+
+def print_elapsed_time(msg):
+    global time_start, seconds, minutes
+    try:
+        print(f"\r{msg}: {minutes} Minutes {seconds} Seconds")
+        # sys.stdout.write()
+        # sys.stdout.flush()
+        # time.sleep(1)
+        seconds = int(time.time() - time_start) - minutes * 60
+        if seconds >= 60:
+            minutes += 1
+            seconds = 0
+    except Exception as e:
+        print(e)
+
+def main():
+
+    print(f"Max File Count: {MAX_FILE_COUNT}")
+    print(f"Number Of Clusters: {NUM_CLUSTERS}")
+    print_elapsed_time("Begin Program")
+
     # Remove summary file if exists and add an empty one with header
     remove_add_summary()
+
+    print_elapsed_time("Get File Data")
 
     # Get the text data split per file, in a list  
     document_data = get_file_text_data_list()
 
     file_data = pd.DataFrame(document_data)
-    # join the paragraphs for each file into a single string... list is still split per file
-    document_data_text = [(' '.join(doc['text'])) for doc in document_data]
-    #normalize the documents
-    # norm_corpus = normalize_corpus(document_data_text)
 
-    norm_file_corpus = normalize_corpus(corpus=document_data_text, lemmatize=True, only_text_chars=True)
-    # extract tf-idf features
+    # join the paragraphs for each file into a single string... list is still split per file
+    document_data_text = [(' '.join(doc['file_text'])) for doc in document_data]
+   
+    print_elapsed_time("Normalize Data")
+    #normalize the documents
+    norm_file_corpus = normalize_corpus(corpus=document_data_text)
+
+    print_elapsed_time("Vectorize")
+    # extract bag of words features
     vectorizer, feature_matrix = build_feature_matrix(norm_file_corpus,
                                                 feature_type='frequency',
-                                                min_df=0.24, max_df=0.85,
+                                                min_df=0.01, max_df=0.85,
                                                 ngram_range=(1, 2))
 
     # get feature names
     feature_names = vectorizer.get_feature_names() 
-    # print sample features
-    print (feature_names[:20])
 
-    num_clusters = 5    
-    km_obj, clusters = k_means(feature_matrix=feature_matrix,
-                            num_clusters=num_clusters)
+    print_elapsed_time("K-Means Model")
+    # Get k-means model and the cluster object
+    km_obj, clusters = k_means(feature_matrix=feature_matrix, num_clusters=NUM_CLUSTERS)
 
-    file_data['Cluster'] = clusters
+    # add cluster indexes to file_data data frame
+    file_data['cluster'] = clusters
 
+    print_elapsed_time("Get Cluster Data")
+    # Get object with the cluster number, key features and file data per cluster
     cluster_data =  get_cluster_data(clustering_obj=km_obj,
                                  file_data=file_data,
                                  feature_names=feature_names,
-                                 num_clusters=num_clusters,
-                                 topn_features=5)         
+                                 num_clusters=NUM_CLUSTERS,
+                                 topn_features=TOP_N_FEATURES)         
 
-    print_cluster_data(cluster_data) 
+    # print_cluster_data(cluster_data) 
+
+    print_elapsed_time("Build Summaries")
+    summaries = build_summary_list(file_data, cluster_data)
+
+    write_to_summary_file(summaries) 
 
 
     print("Silhouette Coefficient: %0.3f" % metrics.silhouette_score(feature_matrix, clusters, sample_size=1000))
 
-    # visualizer = SilhouetteVisualizer(KMeans(5))
-    # visualizer.fit(cv_matrix)
-    # visualizer.poof()
-    # # stop_words = nltk.corpus.stopwords.words('english')
-    # # tf = TfidfVectorizer(ngram_range=(1, 2), min_df=10, max_df=0.8)
-    # # tfidf_matrix = tf.fit_transform(norm_corpus)
-    # # tfidf_matrix.shape
-
-    # # km = KMeans(n_clusters=NUM_CLUSTERS, max_iter=10000, n_init=50, random_state=42).fit(tfidf_matrix)
-    # # print("Silhouette Coefficient: %0.3f" % metrics.silhouette_score(tfidf_matrix, km.labels_, sample_size=1000))
-        
-
-    # cv = CountVectorizer(ngram_range=(1, 2), min_df=10, max_df=0.8)
-    # cv_matrix = cv.fit_transform(norm_corpus)
-    # cv_matrix.shape
-
-    # NUM_CLUSTERS = 5
-    # km = KMeans(n_clusters=NUM_CLUSTERS, max_iter=10000, n_init=50, random_state=42).fit(cv_matrix)
-    # # km
-    # # KMeans(algorithm='auto', copy_x=True, init='k-means++', max_iter=10000,
-    # # n_clusters=6, n_init=50, n_jobs=None, precompute_distances='auto',
-    # # random_state=42, tol=0.0001, verbose=0)
-    # file_data['kmeans_cluster'] = km.labels_
-
-    # # km = KMeans(n_clusters=NUM_CLUSTERS, max_iter=10000, n_init=50, random_state=42).fit(cv_matrix)
-    # print("Silhouette Coefficient: %0.3f" % metrics.silhouette_score(cv_matrix, km.labels_, sample_size=1000))
-
-    # from collections import Counter
-    # Counter(km.labels_)
-    # # Counter({2: 429, 1: 2832, 3: 539, 5: 238, 4: 706, 0: 56})
-
-    # # visualizer = KElbowVisualizer(KMeans(), k=(2,64), timings=False)
-    # visualizer = SilhouetteVisualizer(KMeans(5))
-    # visualizer.fit(cv_matrix)
-    # visualizer.poof()
-
-    # file_clusters = (file_data[['file_name', 'kmeans_cluster']]
-    #                     .sort_values(by=['kmeans_cluster'],
-    #                             ascending=False)
-    #                     .groupby('kmeans_cluster').head(20))
-    # file_clusters = file_clusters.copy(deep=True)
-    # feature_names = cv.get_feature_names()
-    # topn_features = 15
-    # ordered_centroids = km.cluster_centers_.argsort()[:, ::-1]
-    # # get key features for each cluster
-    # # get movies belonging to each cluster
-    # for cluster_num in range(NUM_CLUSTERS):
-    #     key_features = [feature_names[index] for index in ordered_centroids[cluster_num, :topn_features]]
-    #     files = file_clusters[file_clusters['kmeans_cluster'] == cluster_num]['file_name'].values.tolist()
-    #     print('CLUSTER #'+str(cluster_num+1))
-    #     print('Key Features:', key_features)
-    #     print('Files', files)
-    #     print('-'*80)
-
-    # import time
-    # import sys
-    # time_start = time.time()
-    # seconds = 0
-    # minutes = 0
-    # f_count = 0
-
-
-    # tfidf_vectorizer = TfidfVectorizer()
-
-    # # pos_tag = ['PROPN', 'ADJ', 'NOUN', 'VERB']
-    # # text_spacy = NLP(norm_corpus)
-    # # norm_corpus = []
-    # # for token in text_spacy:
-    # #     if(token.pos_ in pos_tag):
-    # #         word = token.lemma_ if token.lemma_ != '-PRON-' else token.text
-    # #         norm_corpus.append(word)
-    # try:
-    #     tfidf_matrix = tfidf_vectorizer.fit_transform(norm_corpus)
-    #     # km = KMeans(n_clusters=NUM_CLUSTERS).fit(tfidf_matrix)
-    #     km = KMeans(n_clusters=NUM_CLUSTERS, max_iter=10000, n_init=50, random_state=42).fit(tfidf_matrix)
-    #     feature_names = tfidf_vectorizer.get_feature_names()
-    #     topn_features = TOP_N_FEATURES
-    #     ordered_centroids = km.cluster_centers_.argsort()[:, ::-1]
-    #     print("Silhouette Coefficient: %0.3f" % metrics.silhouette_score(tfidf_matrix, km.labels_, sample_size=1000))
-    #     visualizer = KElbowVisualizer(KMeans(), k=(4,48), timings=False)
-    #     # visualizer = SilhouetteVisualizer(KMeans(13))
-    #     visualizer.fit(tfidf_matrix)
-    #     visualizer.poof()
-    #     # Use the quick method and immediately show the figure
-    #     # kelbow_visualizer(KMeans(random_state=4), tfidf_matrix, k=(2,10))
-
-    #     print('File Name: ' + file_name)
-    #     # get key features for each cluster
-    #     for cluster_num in range(NUM_CLUSTERS):
-    #         key_features = [feature_names[index] for index in ordered_centroids[cluster_num, :topn_features]]
-    #         print('CLUSTER #'+str(cluster_num+1))
-    #         print('Key Features:', key_features)
-    #         print('-'*80)
-    # except Exception as ex:
-    #     print(ex)
-
-
-
-
-
-
-    # # # document represents a single file
-    # # for document in document_data:
-    # #     f_count += 1
-    # #     file_name = document['file_name']
-    # #     # List of paragraphs from file
-    # #     text = document['text']
-    # #     # Join list of paragraphs into a single string
-    # #     file_corpus = ' '.join(text)
-    # #     sentences = parse_document(file_corpus)
-    # #     cluster_document(file_name, sentences)
-    # #     # summary_sentences = textrank_text_summarizer(sentences)
-    # #     # write_to_summary_file(file_name, summary_sentences)
-    # #     print(f" File number: {f_count}")
-    # #     try:
-    # #         sys.stdout.write("\r{minutes} Minutes {seconds} Seconds".format(minutes=minutes, seconds=seconds))
-    # #         sys.stdout.flush()
-    # #         time.sleep(1)
-    # #         seconds = int(time.time() - time_start) - minutes * 60
-    # #         if seconds >= 60:
-    # #             minutes += 1
-    # #             seconds = 0
-    # #     except KeyboardInterrupt as e:
-    # #         break
-    # # # document_clusters = cluster_documents(document_data)
-    # # # document_summaries = summarize_document_clusters(document_clusters)
-  
+    print_elapsed_time("End Program")
 
 
 if __name__ == "__main__":
